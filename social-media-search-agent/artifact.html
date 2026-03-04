@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Social Media Search Agent</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  @keyframes spin { to { transform: rotate(360deg) } }
+  @keyframes fadeUp { from { opacity:0; transform:translateY(8px) } to { opacity:1; transform:translateY(0) } }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .spin { animation: spin 1s linear infinite; display:inline-block }
+  .fade-up { animation: fadeUp 0.3s ease forwards }
+  .blink { animation: blink 1.4s ease-in-out infinite }
+  ::-webkit-scrollbar { width:5px }
+  ::-webkit-scrollbar-track { background:#111827 }
+  ::-webkit-scrollbar-thumb { background:#374151; border-radius:3px }
+  body { background:#09090f }
+</style>
+</head>
+<body class="text-gray-100 min-h-screen font-sans">
+
+<!-- Header -->
+<header class="border-b border-gray-800/70 px-5 py-3 sticky top-0 z-10" style="background:#09090f">
+  <div class="max-w-5xl mx-auto flex items-center gap-2.5">
+    <div id="dot" class="w-2 h-2 rounded-full bg-gray-700 transition-all duration-500"></div>
+    <span class="font-semibold text-sm tracking-tight">Social Media Search Agent</span>
+    <span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-500">Demo</span>
+    <span class="ml-auto text-xs text-gray-700">Powered by Claude</span>
+  </div>
+</header>
+
+<div class="max-w-5xl mx-auto px-5 py-7 space-y-5">
+
+  <!-- Search -->
+  <div>
+    <div class="flex gap-2.5">
+      <textarea id="q" rows="2"
+        placeholder="Describe what you want to find across social media (e.g. 'developer frustration with Kubernetes complexity')"
+        class="flex-1 rounded-xl px-4 py-3 text-sm resize-none focus:outline-none transition-colors placeholder-gray-700"
+        style="background:#131320; border:1px solid #1f2937"
+        onfocus="this.style.borderColor='#3b82f6'" onblur="this.style.borderColor='#1f2937'"></textarea>
+      <button id="btn" onclick="startSearch()"
+        class="px-5 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-xl text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed self-stretch flex items-center gap-1.5 flex-shrink-0">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        Search
+      </button>
+    </div>
+    <div class="flex flex-wrap gap-1.5 mt-2.5 items-center">
+      <span class="text-[11px] text-gray-700">Try:</span>
+      <div id="examples" class="flex flex-wrap gap-1.5"></div>
+    </div>
+    <p class="text-[11px] text-gray-700 mt-1.5">Press Ctrl+Enter to search</p>
+  </div>
+
+  <!-- Pipeline -->
+  <div id="pipeline" class="hidden rounded-xl p-4 border border-gray-800/50" style="background:#0e0e1a"></div>
+
+  <!-- Body: left + right panels -->
+  <div id="body" class="hidden grid gap-4" style="grid-template-columns:260px 1fr">
+    <div class="space-y-4">
+      <div id="meter" class="rounded-xl p-4 border border-gray-800/50" style="background:#0e0e1a"></div>
+      <div id="qpanel" class="rounded-xl p-4 border border-gray-800/50" style="background:#0e0e1a"></div>
+    </div>
+    <div id="rfeed" class="rounded-xl p-4 border border-gray-800/50 overflow-y-auto" style="background:#0e0e1a; max-height:680px"></div>
+  </div>
+
+</div>
+
+<script>
+// ── Data ───────────────────────────────────────────────────────────────────
+const PLATFORMS = [
+  { id:'twitter',   label:'X / Twitter', icon:'𝕏',  badge:'bg-sky-950 text-sky-300 border-sky-900' },
+  { id:'reddit',    label:'Reddit',      icon:'⬆',  badge:'bg-orange-950 text-orange-300 border-orange-900' },
+  { id:'linkedin',  label:'LinkedIn',    icon:'in', badge:'bg-blue-950 text-blue-300 border-blue-900' },
+  { id:'instagram', label:'Instagram',   icon:'◈',  badge:'bg-pink-950 text-pink-300 border-pink-900' },
+  { id:'tiktok',    label:'TikTok',      icon:'♪',  badge:'bg-purple-950 text-purple-300 border-purple-900' },
+  { id:'youtube',   label:'YouTube',     icon:'▶',  badge:'bg-red-950 text-red-300 border-red-900' },
+];
+
+const EXAMPLES = [
+  'AI regulation debates in financial services',
+  'Gen Z attitudes toward homeownership',
+  'climate tech startup funding',
+  'developer frustration with Kubernetes',
+  'remote work productivity research',
+];
+
+const STEPS = [
+  { id:'query_gen',     label:'Query Gen',    icon:'⚙' },
+  { id:'data_fetch',    label:'Data Fetch',   icon:'📡' },
+  { id:'scoring',       label:'Scoring',      icon:'⚖' },
+  { id:'evaluation',    label:'Evaluation',   icon:'📊' },
+  { id:'broadening',    label:'Broadening',   icon:'🔄', optional:true },
+  { id:'broader_fetch', label:'Broad Fetch',  icon:'📡', optional:true },
+  { id:'filtering',     label:'LLM Filter',   icon:'🔬', optional:true },
+  { id:'finalize',      label:'Finalize',     icon:'✅' },
+];
+
+const STOP = new Set(['the','a','an','is','are','was','were','be','been','have','has','had',
+  'do','does','did','will','would','could','should','may','might','can','for','and','or',
+  'but','in','on','at','to','of','with','by','from','up','about','into','through','what',
+  'people','saying','find','how','why','when','where','who','which','across','i','me',
+  'my','social','media','posts','content','search','looking']);
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const rand  = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+const pick  = arr => arr[rand(0,arr.length-1)];
+
+function keywords(q) {
+  return q.toLowerCase().replace(/[^\w\s]/g,'').split(/\s+/)
+    .filter(w => w.length > 2 && !STOP.has(w)).slice(0,6);
+}
+
+function genQueries(kws) {
+  const [k0='topic', k1=k0, k2=k1] = kws;
+  return {
+    twitter:   `"${k0}" AND ("${k1}" OR "${k2}") lang:en -spam`,
+    reddit:    `(${k0} ${k1}) (discussion OR opinion OR experience)`,
+    linkedin:  `"${k0}" "${k1}" (professionals OR industry OR leaders)`,
+    instagram: `#${k0.replace(/\s+/g,'')} #${k1.replace(/\s+/g,'')} trending`,
+    tiktok:    `${k0} ${k1} #fyp #learnontiktok 2025`,
+    youtube:   `"${k0}" "${k1}" (review OR analysis OR explained) 2025`,
+  };
+}
+
+function broadenQueries(orig, kws) {
+  return Object.fromEntries(Object.entries(orig).map(([p,q]) => [
+    p, q.replace(' AND ',' OR ').replace(/ -\w+/g,'') + ` OR "${kws[rand(0,kws.length-1)]||'related'}"`,
+  ]));
+}
+
+// ── Mock Post Generation ───────────────────────────────────────────────────
+const AUTHORS = {
+  twitter:   () => `@${pick(['tech_','analyst_','research_','policy_','market_','future_'])}${rand(10,999)}`,
+  reddit:    () => `u/${pick(['curious_','data_','market_','tech_','thoughtful_'])}${rand(10,9999)}`,
+  linkedin:  () => `${pick(['Sarah','James','Priya','Marcus','Elena','David','Aisha','Tom'])} ${pick(['Chen','Johnson','Patel','Williams','Kim','Smith','Park','Brown'])}`,
+  instagram: () => `@${pick(['insights_','creator_','analyst_','thought_'])}${rand(100,9999)}`,
+  tiktok:    () => `@${pick(['explainer_','takes_','facts_','deep_'])}${rand(100,9999)}`,
+  youtube:   () => `${pick(['Tech Insights','Deep Dive','The Analysis','Research Weekly','Breakdown'])}`,
+};
+
+const ENGAGEMENT = {
+  twitter:   () => ({ likes:rand(10,50000), retweets:rand(5,5000), replies:rand(2,1000) }),
+  reddit:    () => ({ upvotes:rand(50,25000), comments:rand(5,500) }),
+  linkedin:  () => ({ reactions:rand(50,5000), comments:rand(5,300), reposts:rand(2,200) }),
+  instagram: () => ({ likes:rand(500,100000), comments:rand(10,2000) }),
+  tiktok:    () => ({ views:rand(10000,5000000), likes:rand(500,200000), comments:rand(50,5000) }),
+  youtube:   () => ({ views:rand(1000,2000000), likes:rand(100,50000), comments:rand(10,2000) }),
+};
+
+function makeTemplates(kws) {
+  const [k0='topic', k1=k0, k2=k1] = kws;
+  return {
+    twitter: [
+      `Hot take: ${k0} is reshaping how we think about ${k1}. Here's the data that convinced me 🧵`,
+      `Just finished reading 3 reports on ${k0}. The ${k1} implications are bigger than most people realize.`,
+      `Controversial opinion: the ${k0} conversation is completely missing the ${k1} angle. Thread incoming.`,
+      `Breaking down the ${k0} situation in one tweet: it's not about ${k1}, it's about ${k2}. Here's why.`,
+      `My take after 5 years working on ${k0}: everything people believe about ${k1} is wrong. Example: ↓`,
+      `New ${k0} data just dropped. ${k1} numbers are wild. Sharing the key charts with my analysis.`,
+    ],
+    reddit: [
+      `[Discussion] What's your honest take on ${k0}? The ${k1} narrative seems off to me. (long post)`,
+      `PSA: If you're just learning about ${k0}, here are the 10 resources I wish I had from the start`,
+      `Anyone else noticing the shift in ${k0} sentiment? Feels like ${k1} changed everything last quarter.`,
+      `I compiled 6 months of ${k0} data. The ${k1} correlation surprised even me — sharing full analysis.`,
+      `Unpopular opinion: the ${k0} debate is overblown. The actual ${k1} impact is more limited than reported.`,
+      `${k0} megathread: post your ${k1} experiences. Mod note: keep it civil, data-backed comments preferred.`,
+    ],
+    linkedin: [
+      `After 10 years in the industry, here's what ${k0} really means for ${k1}. Three insights leaders need:\n\n1/ The data shows...`,
+      `Excited to share our latest research on ${k0}. The ${k1} adoption numbers surprised our entire team.`,
+      `${k0.charAt(0).toUpperCase()+k0.slice(1)} isn't a trend — it's a fundamental shift in how ${k1} works. Here's the evidence I've gathered.`,
+      `I spoke with 50 executives about ${k0} this quarter. Their views on ${k1} reveal a dangerous blind spot.`,
+      `New report: ${k0} and ${k1} intersection is creating unexpected opportunities. Key findings below.`,
+    ],
+    instagram: [
+      `Swipe to see how ${k0} is changing everything about ${k1} 📊 The numbers don't lie. #${k0.replace(/\s+/g,'')}`,
+      `POV: You finally understand ${k0} 🤯 Link in bio for the full breakdown #${k0.replace(/\s+/g,'')} #${k1.replace(/\s+/g,'')}`,
+      `Nobody is talking about the ${k0} × ${k1} connection. Until now 👇 #insights #${k0.replace(/\s+/g,'')}`,
+      `3 things the ${k0} data is telling us about ${k1} in 2025. Save this. #${k0.replace(/\s+/g,'')} #analysis`,
+    ],
+    tiktok: [
+      `Explaining ${k0} in 60 seconds because nobody else will 🔥 #${k0.replace(/\s+/g,'')} #learnontiktok #fyp`,
+      `The truth about ${k0} that the ${k1} industry doesn't want you to know 👀 #exposed #fyp`,
+      `Reply to @viewer — here's my full take on ${k0} and why ${k1} matters more than people think #${k0.replace(/\s+/g,'')}`,
+      `${k0.charAt(0).toUpperCase()+k0.slice(1)} vs ${k1}: a breakdown nobody asked for but everyone needs 📱 #fyp #trending`,
+    ],
+    youtube: [
+      `${k0.charAt(0).toUpperCase()+k0.slice(1)} Explained: Everything You Need to Know (2025 Update)`,
+      `I Spent 30 Days Researching ${k0} — Here's What the ${k1} Data Actually Shows`,
+      `Why ${k0} Is About to Change ${k1} | Full Analysis`,
+      `The ${k0} Crisis Nobody Is Talking About | Deep Dive`,
+      `${k0.charAt(0).toUpperCase()+k0.slice(1)} vs ${k1}: Which Side Is Right? (With Evidence)`,
+    ],
+    noise: [
+      { text:'Just had the best coffee of my life ☕ Highly recommend trying it', platform:'twitter' },
+      { text:'Anyone watching the game tonight? Big match coming up!', platform:'twitter' },
+      { text:'New recipe I tried this weekend turned out incredible 😋', platform:'instagram' },
+      { text:'Road trip across the coast. Best decision I made all year 🚗✨', platform:'instagram' },
+      { text:'🚨 HIRING: Senior engineers for our fast-growing startup. DM for details!', platform:'linkedin' },
+      { text:'Random shower thought: why do we park in driveways and drive on parkways?', platform:'reddit' },
+      { text:'My cat learned to open the fridge. I have questions.', platform:'twitter' },
+      { text:'Throwback to this incredible sunset last summer 🌅', platform:'instagram' },
+    ],
+  };
+}
+
+function makePosts(kws, count, relevancePct) {
+  const tmpl = makeTemplates(kws);
+  const posts = [];
+  const perPlatform = Math.ceil(count / PLATFORMS.length);
+
+  for (const p of PLATFORMS) {
+    const n = Math.min(perPlatform, count - posts.length);
+    if (n <= 0) break;
+    for (let i = 0; i < n; i++) {
+      const r = Math.random();
+      let text, score, reason;
+      if (r < relevancePct) {
+        text  = pick(tmpl[p.id] || tmpl.twitter);
+        score = rand(7, 10);
+        reason = `Directly relevant to "${kws[0]||'topic'}" with strong ${kws[1]||'topical'} signal.`;
+      } else if (r < relevancePct + 0.15) {
+        const t = pick(tmpl[p.id] || tmpl.twitter);
+        text  = t.replace(new RegExp(kws[0]||'x','ig'), 'industry trends');
+        score = rand(4, 6);
+        reason = `Adjacent topic — lacks specific focus on "${kws[0]||'topic'}".`;
+      } else {
+        const np = pick(tmpl.noise);
+        text  = np.text;
+        score = rand(1, 3);
+        reason = `Unrelated to search intent.`;
+      }
+      const dAgo = rand(0,30), hAgo = rand(0,23);
+      posts.push({
+        id:         Math.random().toString(36).slice(2),
+        platform:   p.id,
+        text,
+        author:     AUTHORS[p.id](),
+        timestamp:  dAgo === 0 ? `${hAgo}h ago` : `${dAgo}d ago`,
+        engagement: ENGAGEMENT[p.id](),
+        score,
+        reason,
+      });
+    }
+  }
+  return posts.sort((a,b) => b.score - a.score);
+}
+
+// ── Render helpers ─────────────────────────────────────────────────────────
+const pltMap = Object.fromEntries(PLATFORMS.map(p => [p.id, p]));
+
+function fmtNum(n) {
+  return n >= 1000000 ? (n/1000000).toFixed(1)+'M' : n >= 1000 ? (n/1000).toFixed(1)+'k' : String(n);
+}
+
+function renderExamples() {
+  document.getElementById('examples').innerHTML = EXAMPLES.map(e =>
+    `<button onclick="useExample(this)"
+      class="text-[11px] px-2.5 py-1 rounded-lg text-gray-500 hover:text-gray-300 transition-colors border border-gray-800 hover:border-gray-700"
+      style="background:#131320">${e}</button>`
+  ).join('');
+}
+
+function useExample(btn) {
+  document.getElementById('q').value = btn.textContent;
+  document.getElementById('q').focus();
+}
+
+function renderPipeline(activeStep, completed, skipped) {
+  const el = document.getElementById('pipeline');
+  el.classList.remove('hidden');
+
+  const mainSteps = STEPS.filter(s => !s.optional);
+  const refSteps  = STEPS.filter(s => s.optional);
+  const showRef   = refSteps.some(s => completed.has(s.id) || activeStep === s.id);
+
+  function nodeHTML(s) {
+    const done   = completed.has(s.id);
+    const active = activeStep === s.id;
+    const skip   = skipped.has(s.id);
+    let ring = 'border-gray-800 text-gray-700';
+    let lbl  = 'text-gray-700';
+    let badge = '';
+    if (done)   { ring='border-emerald-700/60 text-emerald-400'; lbl='text-emerald-400'; badge='<span class="text-[9px] text-emerald-500 mt-0.5">✓ done</span>'; }
+    if (active) { ring='border-blue-600/70 text-blue-400'; lbl='text-blue-300'; badge='<span class="text-[9px] text-blue-500 mt-0.5 blink">● running</span>'; }
+    if (skip)   { ring='border-gray-800/30 text-gray-800'; lbl='text-gray-800'; badge='<span class="text-[9px] text-gray-700 mt-0.5">skipped</span>'; }
+    return `
+      <div class="flex flex-col items-center gap-1 flex-1 min-w-0">
+        <div class="w-9 h-9 rounded-full border ${ring} flex items-center justify-center text-base transition-all duration-300"
+             style="background:#0a0a14">${s.icon}</div>
+        <div class="text-[10px] font-medium ${lbl} text-center leading-tight">${s.label}</div>
+        ${badge ? `<div>${badge}</div>` : '<div class="h-4"></div>'}
+      </div>`;
+  }
+
+  const arrow = `<div class="text-gray-800 self-center pb-7 flex-shrink-0 text-sm">›</div>`;
+  const mainHTML = mainSteps.map((s,i) => nodeHTML(s)+(i<mainSteps.length-1?arrow:'')).join('');
+
+  let refHTML = '';
+  if (showRef) {
+    refHTML = `
+      <div class="mt-4 pt-4 border-t border-gray-800/40">
+        <div class="text-[10px] text-amber-600/80 mb-3 font-medium uppercase tracking-wider">
+          ⚡ Refinement path (relevance below 80% threshold)
+        </div>
+        <div class="flex items-start gap-1">
+          ${refSteps.map((s,i) => nodeHTML(s)+(i<refSteps.length-1?arrow:'')).join('')}
+        </div>
+      </div>`;
+  }
+
+  el.innerHTML = `<div class="flex items-start gap-1 overflow-x-auto pb-1">${mainHTML}</div>${refHTML}`;
+}
+
+function renderMeter(rel, prog, isFiltering) {
+  const pct = Math.round(rel * 100);
+  const col  = pct >= 80 ? ['emerald','#10b981'] : pct >= 60 ? ['amber','#f59e0b'] : ['red','#ef4444'];
+  document.getElementById('meter').innerHTML = `
+    <h3 class="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-3">Relevance</h3>
+    <div class="flex items-end gap-2 mb-3">
+      <span class="text-3xl font-bold" style="color:${col[1]}">${pct}%</span>
+      <span class="text-[11px] text-gray-600 mb-1">≥ 7/10 score</span>
+    </div>
+    <div class="relative h-1.5 rounded-full overflow-visible mb-1" style="background:#1a1a2e">
+      <div class="absolute inset-y-0 left-0 rounded-full transition-all duration-700" style="width:${pct}%;background:${col[1]}"></div>
+      <div class="absolute top-0 h-full w-px" style="left:80%;background:#ca8a04;opacity:0.7"></div>
+    </div>
+    <div class="flex justify-between text-[10px] text-gray-700 mb-1"><span>0%</span><span style="color:#854d0e">80%</span><span>100%</span></div>
+    ${prog ? `
+    <div class="mt-3 pt-3 border-t border-gray-800/40">
+      <div class="flex justify-between text-[11px] text-gray-600 mb-1">
+        <span>${isFiltering?'Filtering':'Scoring'}</span><span>${prog.done}/${prog.total}</span>
+      </div>
+      <div class="h-1 rounded-full overflow-hidden" style="background:#1a1a2e">
+        <div class="h-full rounded-full bg-blue-600 transition-all duration-200" style="width:${Math.round(prog.done/prog.total*100)}%"></div>
+      </div>
+    </div>` : ''}`;
+}
+
+let _qs = {};
+function renderQueryPanel(queries, broadened, activeTab) {
+  const tabs = PLATFORMS.filter(p => queries[p.id]);
+  if (!tabs.length) { document.getElementById('qpanel').innerHTML = ''; return; }
+  const tab = activeTab || tabs[0].id;
+  const hasBoth = broadened && Object.keys(broadened).length > 0;
+  const q = (hasBoth && broadened[tab]) ? broadened[tab] : (queries[tab]||'');
+  _qs = { queries, broadened, activeTab: tab, showBroad: hasBoth };
+  document.getElementById('qpanel').innerHTML = `
+    <h3 class="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-3">Boolean Queries</h3>
+    <div class="flex flex-wrap gap-1 mb-2.5">
+      ${tabs.map(p => `<button onclick="_switchTab('${p.id}')"
+        class="text-[10px] px-2 py-0.5 rounded-md transition-colors ${tab===p.id
+          ? 'text-white' : 'text-gray-600 hover:text-gray-400'}"
+        style="${tab===p.id?'background:#374151':'background:#111827'}">${p.label.split(' ')[0]}</button>`).join('')}
+    </div>
+    ${hasBoth ? `<div class="flex gap-1 mb-2">
+      <button onclick="_toggleQView(false)" class="text-[10px] px-2 py-0.5 rounded-md transition-colors ${!_qs.showBroad?'text-white':'text-gray-600'}"
+        style="${!_qs.showBroad?'background:#374151':'background:#111827'}">Original</button>
+      <button onclick="_toggleQView(true)" class="text-[10px] px-2 py-0.5 rounded-md transition-colors ${_qs.showBroad?'text-amber-300':'text-gray-600'}"
+        style="${_qs.showBroad?'background:#3d2a00':'background:#111827'}">Broadened</button>
+    </div>` : ''}
+    <div class="rounded-lg p-3 font-mono text-[11px] text-gray-400 leading-relaxed break-all" style="background:#07070f">
+      ${q || '<span class="text-gray-700">Generating...</span>'}
+    </div>`;
+}
+function _switchTab(id) { renderQueryPanel(_qs.queries||{}, _qs.showBroad?(_qs.broadened||{}):{}, id); }
+function _toggleQView(b) { _qs.showBroad=b; renderQueryPanel(_qs.queries||{}, b?(_qs.broadened||{}):{}, _qs.activeTab); }
+
+function renderResults(posts, label) {
+  const el = document.getElementById('rfeed');
+  if (!posts.length) {
+    el.innerHTML = `<div class="text-center text-gray-700 py-12 text-sm space-y-1">
+      <div class="text-2xl blink">◌</div><p>Running pipeline...</p></div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-[10px] font-semibold text-gray-600 uppercase tracking-wider">${label||posts.length+' Results'}</h3>
+    </div>
+    <div class="space-y-2.5">
+      ${posts.map(p => {
+        const plt = pltMap[p.platform];
+        const eng = Object.entries(p.engagement).slice(0,2).map(([k,v]) => `${fmtNum(v)} ${k}`).join(' · ');
+        const sc  = p.score >= 8 ? '#10b981' : p.score >= 6 ? '#f59e0b' : '#ef4444';
+        const dots = '●'.repeat(Math.round(p.score/2))+'○'.repeat(5-Math.round(p.score/2));
+        return `
+          <div class="rounded-xl p-3 border border-gray-800/30 hover:border-gray-700/60 transition-colors fade-up" style="background:#0a0a16">
+            <div class="flex items-start justify-between gap-2 mb-2">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="text-[10px] px-1.5 py-0.5 rounded border font-medium ${plt.badge}">${plt.icon} ${plt.label}</span>
+                <span class="text-[11px] text-gray-500">${p.author}</span>
+                <span class="text-[11px] text-gray-700">${p.timestamp}</span>
+              </div>
+              <div class="flex items-center gap-1 flex-shrink-0">
+                <span class="text-[11px] font-mono font-semibold" style="color:${sc}">${p.score}/10</span>
+                <span class="text-[10px] font-mono tracking-tighter" style="color:${sc}">${dots}</span>
+              </div>
+            </div>
+            <p class="text-sm text-gray-300 leading-relaxed mb-2">${p.text}</p>
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-[11px] text-gray-700">${eng}</span>
+              <span class="text-[11px] text-gray-600 italic text-right">${p.reason}</span>
+            </div>
+          </div>`;
+      }).join('')}
+    </div>`;
+}
+
+// ── Pipeline Simulation ────────────────────────────────────────────────────
+let running = false;
+
+async function startSearch() {
+  const q = document.getElementById('q').value.trim();
+  if (!q || running) return;
+  running = true;
+
+  const btn = document.getElementById('btn');
+  btn.disabled = true;
+  document.getElementById('dot').className = 'w-2 h-2 rounded-full bg-blue-500 blink transition-all';
+
+  const completed = new Set();
+  const skipped   = new Set();
+  let   active    = null;
+
+  document.getElementById('pipeline').classList.remove('hidden');
+  document.getElementById('body').classList.remove('hidden');
+  document.getElementById('meter').innerHTML = '';
+  document.getElementById('qpanel').innerHTML = '';
+  renderResults([], '');
+
+  const kws           = keywords(q);
+  const initRel       = 0.62 + Math.random() * 0.28;  // 62–90%
+  const needsRefine   = initRel < 0.80;
+
+  function set(step) { active = step; renderPipeline(active, completed, skipped); }
+  function done(step) { completed.add(step); active = null; renderPipeline(active, completed, skipped); }
+
+  // Step 1 – Query Generation
+  set('query_gen');
+  await sleep(1100 + rand(0,600));
+  const queries = genQueries(kws);
+  renderQueryPanel(queries, {}, 'twitter');
+  done('query_gen');
+
+  // Step 2 – Data Fetch
+  set('data_fetch');
+  await sleep(700 + rand(0,400));
+  done('data_fetch');
+
+  // Step 3 – Scoring with live progress
+  set('scoring');
+  const total = 500;
+  for (let d = 0; d <= total; d += rand(15,30)) {
+    const dd = Math.min(d, total);
+    renderMeter(initRel * (dd/total), { done:dd, total }, false);
+    await sleep(55);
+  }
+  renderMeter(initRel, null, false);
+  renderResults(makePosts(kws, 24, initRel), `${Math.round(initRel*500)} / 500 posts relevant`);
+  done('scoring');
+
+  // Step 4 – Evaluation
+  set('evaluation');
+  await sleep(500 + rand(0,300));
+  done('evaluation');
+
+  let finalRel = initRel;
+
+  if (needsRefine) {
+    // Step 5 – Broadening
+    set('broadening');
+    await sleep(1100 + rand(0,500));
+    const bq = broadenQueries(queries, kws);
+    renderQueryPanel(queries, bq, 'twitter');
+    done('broadening');
+
+    // Step 6 – Broader Fetch
+    set('broader_fetch');
+    await sleep(700 + rand(0,400));
+    done('broader_fetch');
+
+    // Step 7 – LLM Filter with live progress
+    set('filtering');
+    const total2 = 750;
+    for (let d = 0; d <= total2; d += rand(20,40)) {
+      const dd = Math.min(d, total2);
+      const fRel = 0.50 + (dd/total2)*0.35;
+      renderMeter(fRel, { done:dd, total:total2 }, true);
+      await sleep(45);
+    }
+    finalRel = 0.82 + Math.random() * 0.13;
+    renderMeter(finalRel, null, false);
+    renderResults(makePosts(kws, 24, finalRel), `${Math.round(finalRel*300)} / 300 posts after filtering`);
+    done('filtering');
+  } else {
+    skipped.add('broadening');
+    skipped.add('broader_fetch');
+    skipped.add('filtering');
+    renderPipeline(null, completed, skipped);
+  }
+
+  // Step 8 – Finalize
+  set('finalize');
+  await sleep(350 + rand(0,200));
+  done('finalize');
+
+  // Complete
+  const relPct  = Math.round(finalRel * 100);
+  const path    = needsRefine ? '⚡ refined' : '✓ direct';
+  const posts   = makePosts(kws, 24, finalRel);
+  renderResults(posts, `${posts.length} results · ${relPct}% relevance · ${path} path`);
+  document.getElementById('dot').className = 'w-2 h-2 rounded-full bg-emerald-500 transition-all';
+  renderPipeline(null, completed, skipped);
+
+  running = false;
+  btn.disabled = false;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+renderExamples();
+
+document.getElementById('q').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) startSearch();
+});
+</script>
+</body>
+</html>
