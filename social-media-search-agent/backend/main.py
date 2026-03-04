@@ -7,10 +7,14 @@ import json
 import time
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
+
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
 load_dotenv()
 
@@ -116,3 +120,17 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    """Serve the built React app for every non-API route."""
+    # Try to serve a real file first (JS, CSS, images, etc.)
+    candidate = FRONTEND_DIST / full_path
+    if candidate.exists() and candidate.is_file():
+        return FileResponse(candidate)
+    # Fall back to index.html so React Router handles the path
+    index = FRONTEND_DIST / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    return {"error": "Frontend not built. Run start.sh to build and start the app."}
